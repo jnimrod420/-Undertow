@@ -1,4 +1,4 @@
-name: Build Mac and Windows plugins
+name: Build Echoes & Departures
 on:
   workflow_dispatch:
   push:
@@ -6,7 +6,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: undertow-mac-${{ github.ref }}
+  group: echoes-mac-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   mac:
@@ -17,39 +17,40 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build
-          key: undertow-universal-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Undertow-source.zip') }}-v1
+          key: echoes-universal-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('EchoesAndDepartures-source.zip') }}-v1
       - name: Unpack source
-        run: unzip -q Undertow-source.zip -d source
+        run: unzip -q EchoesAndDepartures-source.zip -d source
       - name: Configure universal plugins
-        run: cmake -S source/Undertow -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DUNDERTOW_PLUGIN_SMOKE=ON
+        run: cmake -S source/EchoesAndDepartures -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DECHOES_PLUGIN_SMOKE=ON
       - name: Build
-        run: cmake --build build --config Release --target Undertow_VST3 Undertow_AU undertow_tests undertow_plugin_smoke undertow_preset_ui_tests --parallel 3
+        run: cmake --build build --config Release --target EchoesAndDepartures_VST3 EchoesAndDepartures_AU echoes_tests echoes_plugin_smoke echoes_preset_ui_tests --parallel 3
       - uses: actions/cache/save@v4
         with:
           path: build
-          key: undertow-universal-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Undertow-source.zip') }}-v1
+          key: echoes-universal-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('EchoesAndDepartures-source.zip') }}-v1
       - name: Test DSP
         run: ctest --test-dir build --output-on-failure
       - name: Check universal architectures
         run: |
-          lipo build/Undertow_artefacts/Release/VST3/Undertow.vst3/Contents/MacOS/Undertow -verify_arch arm64 x86_64
-          lipo build/Undertow_artefacts/Release/AU/Undertow.component/Contents/MacOS/Undertow -verify_arch arm64 x86_64
+          lipo build/EchoesAndDepartures_artefacts/Release/VST3/EchoesAndDepartures.vst3/Contents/MacOS/EchoesAndDepartures -verify_arch arm64 x86_64
+          lipo build/EchoesAndDepartures_artefacts/Release/AU/EchoesAndDepartures.component/Contents/MacOS/EchoesAndDepartures -verify_arch arm64 x86_64
       - name: Load and exercise the actual VST3
         run: |
           mkdir -p dist
-          build/undertow_plugin_smoke_artefacts/Release/undertow_plugin_smoke build/Undertow_artefacts/Release/VST3/Undertow.vst3 dist/Undertow-preview.png
+          build/echoes_plugin_smoke_artefacts/Release/echoes_plugin_smoke build/EchoesAndDepartures_artefacts/Release/VST3/EchoesAndDepartures.vst3
+          build/echoes_preset_ui_tests_artefacts/Release/echoes_preset_ui_tests dist/EchoesAndDepartures-GUI.png
       - name: Sign and package
         run: |
-          codesign --force --deep --sign - build/Undertow_artefacts/Release/VST3/Undertow.vst3
-          codesign --force --deep --sign - build/Undertow_artefacts/Release/AU/Undertow.component
-          codesign --verify --deep --strict build/Undertow_artefacts/Release/VST3/Undertow.vst3
-          codesign --verify --deep --strict build/Undertow_artefacts/Release/AU/Undertow.component
+          codesign --force --deep --sign - build/EchoesAndDepartures_artefacts/Release/VST3/EchoesAndDepartures.vst3
+          codesign --force --deep --sign - build/EchoesAndDepartures_artefacts/Release/AU/EchoesAndDepartures.component
+          codesign --verify --deep --strict build/EchoesAndDepartures_artefacts/Release/VST3/EchoesAndDepartures.vst3
+          codesign --verify --deep --strict build/EchoesAndDepartures_artefacts/Release/AU/EchoesAndDepartures.component
           mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent build/Undertow_artefacts/Release/VST3/Undertow.vst3 dist/Undertow-VST3.zip
-          ditto -c -k --sequesterRsrc --keepParent build/Undertow_artefacts/Release/AU/Undertow.component dist/Undertow-AU.zip
+          ditto -c -k --sequesterRsrc --keepParent build/EchoesAndDepartures_artefacts/Release/VST3/EchoesAndDepartures.vst3 dist/EchoesAndDepartures-VST3.zip
+          ditto -c -k --sequesterRsrc --keepParent build/EchoesAndDepartures_artefacts/Release/AU/EchoesAndDepartures.component dist/EchoesAndDepartures-AU.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Undertow-macOS-universal
+          name: EchoesAndDepartures-macOS-universal
           path: dist/*
           if-no-files-found: error
 
@@ -60,24 +61,26 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unpack source
         shell: pwsh
-        run: Expand-Archive -Path Undertow-source.zip -DestinationPath source
+        run: Expand-Archive -Path EchoesAndDepartures-source.zip -DestinationPath source
       - name: Configure Windows x64
-        run: cmake -S source/Undertow -B build -A x64 -DUNDERTOW_PLUGIN_SMOKE=ON
+        run: cmake -S source/EchoesAndDepartures -B build -A x64 -DECHOES_PLUGIN_SMOKE=ON
       - name: Build Windows VST3 and tests
-        run: cmake --build build --config Release --target Undertow_VST3 undertow_tests undertow_plugin_smoke undertow_preset_ui_tests --parallel 3
+        run: cmake --build build --config Release --target EchoesAndDepartures_VST3 echoes_tests echoes_plugin_smoke echoes_preset_ui_tests --parallel 3
       - name: Test DSP and preset UI
         run: ctest --test-dir build -C Release --output-on-failure
       - name: Load and exercise the Windows VST3
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          & build/undertow_plugin_smoke_artefacts/Release/undertow_plugin_smoke.exe build/Undertow_artefacts/Release/VST3/Undertow.vst3
+          & build/echoes_plugin_smoke_artefacts/Release/echoes_plugin_smoke.exe build/EchoesAndDepartures_artefacts/Release/VST3/EchoesAndDepartures.vst3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & build/echoes_preset_ui_tests_artefacts/Release/echoes_preset_ui_tests.exe dist/EchoesAndDepartures-GUI.png
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Package Windows VST3
         shell: pwsh
-        run: Compress-Archive -Path build/Undertow_artefacts/Release/VST3/Undertow.vst3 -DestinationPath dist/Undertow-VST3-Windows.zip
+        run: Compress-Archive -Path build/EchoesAndDepartures_artefacts/Release/VST3/EchoesAndDepartures.vst3 -DestinationPath dist/EchoesAndDepartures-VST3-Windows.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: Undertow-Windows-x64
-          path: dist/Undertow-VST3-Windows.zip
+          name: EchoesAndDepartures-Windows-x64
+          path: dist/*
           if-no-files-found: error
