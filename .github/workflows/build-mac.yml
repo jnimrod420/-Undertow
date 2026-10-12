@@ -14,18 +14,26 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: build
+          key: undertow-universal-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Undertow-source.zip') }}-v1
       - name: Unpack source
         run: unzip -q Undertow-source.zip -d source
       - name: Configure universal plugins
         run: cmake -S source/Undertow -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DUNDERTOW_PLUGIN_SMOKE=ON
       - name: Build
         run: cmake --build build --config Release --target Undertow_VST3 Undertow_AU undertow_tests undertow_plugin_smoke --parallel 3
+      - uses: actions/cache/save@v4
+        with:
+          path: build
+          key: undertow-universal-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Undertow-source.zip') }}-v1
       - name: Test DSP
         run: ctest --test-dir build --output-on-failure
       - name: Check universal architectures
         run: |
-          lipo -verify_arch arm64 x86_64 build/Undertow_artefacts/Release/VST3/Undertow.vst3/Contents/MacOS/Undertow
-          lipo -verify_arch arm64 x86_64 build/Undertow_artefacts/Release/AU/Undertow.component/Contents/MacOS/Undertow
+          lipo build/Undertow_artefacts/Release/VST3/Undertow.vst3/Contents/MacOS/Undertow -verify_arch arm64 x86_64
+          lipo build/Undertow_artefacts/Release/AU/Undertow.component/Contents/MacOS/Undertow -verify_arch arm64 x86_64
       - name: Load and exercise the actual VST3
         run: |
           mkdir -p dist
