@@ -1,0 +1,46 @@
+name: Build Mac plugins
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: undertow-mac-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  mac:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack source
+        run: unzip -q Undertow-source.zip -d source
+      - name: Configure universal plugins
+        run: cmake -S source/Undertow -B build -DCMAKE_BUILD_TYPE=Release '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DUNDERTOW_PLUGIN_SMOKE=ON
+      - name: Build
+        run: cmake --build build --config Release --target Undertow_VST3 Undertow_AU undertow_tests undertow_plugin_smoke --parallel 3
+      - name: Test DSP
+        run: ctest --test-dir build --output-on-failure
+      - name: Check universal architectures
+        run: |
+          lipo -verify_arch arm64 x86_64 build/Undertow_artefacts/Release/VST3/Undertow.vst3/Contents/MacOS/Undertow
+          lipo -verify_arch arm64 x86_64 build/Undertow_artefacts/Release/AU/Undertow.component/Contents/MacOS/Undertow
+      - name: Load and exercise the actual VST3
+        run: |
+          mkdir -p dist
+          build/undertow_plugin_smoke_artefacts/Release/undertow_plugin_smoke build/Undertow_artefacts/Release/VST3/Undertow.vst3 dist/Undertow-preview.png
+      - name: Sign and package
+        run: |
+          codesign --force --deep --sign - build/Undertow_artefacts/Release/VST3/Undertow.vst3
+          codesign --force --deep --sign - build/Undertow_artefacts/Release/AU/Undertow.component
+          codesign --verify --deep --strict build/Undertow_artefacts/Release/VST3/Undertow.vst3
+          codesign --verify --deep --strict build/Undertow_artefacts/Release/AU/Undertow.component
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent build/Undertow_artefacts/Release/VST3/Undertow.vst3 dist/Undertow-VST3.zip
+          ditto -c -k --sequesterRsrc --keepParent build/Undertow_artefacts/Release/AU/Undertow.component dist/Undertow-AU.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Undertow-macOS-universal
+          path: dist/*
+          if-no-files-found: error
