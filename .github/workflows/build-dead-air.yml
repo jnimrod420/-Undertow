@@ -28,10 +28,10 @@ jobs:
         run: Expand-Archive -Path DeadAir-source.zip -DestinationPath source-deadair
       - name: Configure Mac universal
         if: runner.os == 'macOS'
-        run: cmake -S source-deadair/DeadAir -B build-deadair -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+        run: cmake -S source-deadair/DeadAir -B build-deadair -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_SUPPRESS_REGENERATION=ON
       - name: Configure Windows x64
         if: runner.os == 'Windows'
-        run: cmake -S source-deadair/DeadAir -B build-deadair -A x64
+        run: cmake -S source-deadair/DeadAir -B build-deadair -A x64 -DCMAKE_SUPPRESS_REGENERATION=ON
       - run: cmake --build build-deadair --config Release --parallel 3
       - run: ctest --test-dir build-deadair -C Release --output-on-failure
       - name: Mac GUI and actual VST3 checks
