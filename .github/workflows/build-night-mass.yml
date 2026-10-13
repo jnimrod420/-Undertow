@@ -1,0 +1,92 @@
+name: Build Night Mass
+on:
+  workflow_dispatch:
+  push:
+    branches: [night-mass]
+    paths: ['NightMass-source.zip', '.github/workflows/build-night-mass.yml']
+permissions:
+  contents: read
+concurrency:
+  group: night-mass-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack Mac source
+        if: runner.os == 'macOS'
+        run: unzip -q NightMass-source.zip -d source-nightmass
+      - name: Unpack Windows source
+        if: runner.os == 'Windows'
+        run: Expand-Archive NightMass-source.zip source-nightmass
+      - name: Configure Mac universal
+        if: runner.os == 'macOS'
+        run: cmake -S source-nightmass/NightMass -B build-nightmass -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_SUPPRESS_REGENERATION=ON
+      - name: Configure Windows x64
+        if: runner.os == 'Windows'
+        run: cmake -S source-nightmass/NightMass -B build-nightmass -A x64 -DCMAKE_SUPPRESS_REGENERATION=ON
+      - run: cmake --build build-nightmass --config Release --parallel 3
+      - run: ctest --test-dir build-nightmass -C Release --output-on-failure
+      - name: Verify and package Mac
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist-nightmass/package
+          build-nightmass/nightmass_gui_checks_artefacts/Release/nightmass_gui_checks dist-nightmass
+          build-nightmass/nightmass_host_checks_artefacts/Release/nightmass_host_checks "build-nightmass/NightMass_artefacts/Release/VST3/Night Mass.vst3"
+          lipo "build-nightmass/NightMass_artefacts/Release/VST3/Night Mass.vst3/Contents/MacOS/Night Mass" -verify_arch arm64 x86_64
+          cp -R "build-nightmass/NightMass_artefacts/Release/VST3/Night Mass.vst3" dist-nightmass/package/
+          cp -R "build-nightmass/NightMass_artefacts/Release/AU/Night Mass.component" dist-nightmass/package/
+          codesign --force --deep --sign - "dist-nightmass/package/Night Mass.vst3"
+          codesign --force --deep --sign - "dist-nightmass/package/Night Mass.component"
+          cp source-nightmass/NightMass/Install-Mac.command source-nightmass/NightMass/README.md source-nightmass/NightMass/PRESETS.md dist-nightmass/package/
+          chmod +x dist-nightmass/package/Install-Mac.command
+          cd dist-nightmass/package
+          zip -qr ../NightMass-1.0.0-Mac.zip .
+      - name: Verify and package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-nightmass | Out-Null
+          & build-nightmass/nightmass_gui_checks_artefacts/Release/nightmass_gui_checks.exe dist-nightmass
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & build-nightmass/nightmass_host_checks_artefacts/Release/nightmass_host_checks.exe "build-nightmass/NightMass_artefacts/Release/VST3/Night Mass.vst3"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path "build-nightmass/NightMass_artefacts/Release/VST3/Night Mass.vst3",source-nightmass/NightMass/README.md,source-nightmass/NightMass/PRESETS.md -DestinationPath dist-nightmass/NightMass-1.0.0-Windows-VST3.zip
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $plugin = (Resolve-Path "build-nightmass/NightMass_artefacts/Release/VST3/Night Mass.vst3").Path
+          $dist = (Resolve-Path dist-nightmass).Path
+          & $compiler "/DPluginDir=$plugin" "/O$dist" source-nightmass/NightMass/installer/NightMass.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test Windows installer and removal
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path dist-nightmass/NightMass-1.0.0-Windows-Setup.exe).Path
+          $install = Start-Process $setup -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw 'Installer failed' }
+          $bundle = "$env:CommonProgramFiles\VST3\Night Mass.vst3"
+          $source = (Resolve-Path "build-nightmass/NightMass_artefacts/Release/VST3/Night Mass.vst3").Path
+          Get-ChildItem $source -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($source.Length + 1)
+            $target = Join-Path $bundle $relative
+            if (!(Test-Path $target)) { throw "Missing installed file: $relative" }
+            if ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $target).Hash) { throw "Installed file changed: $relative" }
+          }
+          & build-nightmass/nightmass_host_checks_artefacts/Release/nightmass_host_checks.exe $bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $uninstaller = "$env:ProgramFiles\Nobody But Ghosts\Night Mass\unins000.exe"
+          $remove = Start-Process $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru -Wait
+          if ($remove.ExitCode -ne 0) { throw 'Uninstaller failed' }
+          if (Test-Path "$bundle\Contents\x86_64-win\Night Mass.vst3") { throw 'Plugin remained after uninstall' }
+          Write-Output 'PASS: installer, exact file hashes, installed VST3 load and uninstaller.'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NightMass-${{ runner.os }}
+          path: dist-nightmass/*.*
+          if-no-files-found: error
