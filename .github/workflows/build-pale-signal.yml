@@ -1,0 +1,92 @@
+name: Build Pale Signal
+on:
+  workflow_dispatch:
+  push:
+    branches: [pale-signal]
+    paths: ['PaleSignal-source.zip', '.github/workflows/build-pale-signal.yml']
+permissions:
+  contents: read
+concurrency:
+  group: pale-signal-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack Mac source
+        if: runner.os == 'macOS'
+        run: unzip -q PaleSignal-source.zip -d source-palesignal
+      - name: Unpack Windows source
+        if: runner.os == 'Windows'
+        run: Expand-Archive PaleSignal-source.zip source-palesignal
+      - name: Configure Mac universal
+        if: runner.os == 'macOS'
+        run: cmake -S source-palesignal/PaleSignal -B build-palesignal -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 -DCMAKE_SUPPRESS_REGENERATION=ON
+      - name: Configure Windows x64
+        if: runner.os == 'Windows'
+        run: cmake -S source-palesignal/PaleSignal -B build-palesignal -A x64 -DCMAKE_SUPPRESS_REGENERATION=ON
+      - run: cmake --build build-palesignal --config Release --parallel 3
+      - run: ctest --test-dir build-palesignal -C Release --output-on-failure
+      - name: Verify and package Mac
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist-palesignal/package
+          build-palesignal/palesignal_gui_checks_artefacts/Release/palesignal_gui_checks dist-palesignal
+          build-palesignal/palesignal_host_checks_artefacts/Release/palesignal_host_checks "build-palesignal/PaleSignal_artefacts/Release/VST3/Pale Signal.vst3"
+          lipo "build-palesignal/PaleSignal_artefacts/Release/VST3/Pale Signal.vst3/Contents/MacOS/Pale Signal" -verify_arch arm64 x86_64
+          cp -R "build-palesignal/PaleSignal_artefacts/Release/VST3/Pale Signal.vst3" dist-palesignal/package/
+          cp -R "build-palesignal/PaleSignal_artefacts/Release/AU/Pale Signal.component" dist-palesignal/package/
+          codesign --force --deep --sign - "dist-palesignal/package/Pale Signal.vst3"
+          codesign --force --deep --sign - "dist-palesignal/package/Pale Signal.component"
+          cp source-palesignal/PaleSignal/Install-Mac.command source-palesignal/PaleSignal/README.md source-palesignal/PaleSignal/PRESETS.md dist-palesignal/package/
+          chmod +x dist-palesignal/package/Install-Mac.command
+          cd dist-palesignal/package
+          zip -qr ../PaleSignal-1.0.0-Mac.zip .
+      - name: Verify and package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-palesignal | Out-Null
+          & build-palesignal/palesignal_gui_checks_artefacts/Release/palesignal_gui_checks.exe dist-palesignal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & build-palesignal/palesignal_host_checks_artefacts/Release/palesignal_host_checks.exe "build-palesignal/PaleSignal_artefacts/Release/VST3/Pale Signal.vst3"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path "build-palesignal/PaleSignal_artefacts/Release/VST3/Pale Signal.vst3",source-palesignal/PaleSignal/README.md,source-palesignal/PaleSignal/PRESETS.md -DestinationPath dist-palesignal/PaleSignal-1.0.0-Windows-VST3.zip
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $plugin = (Resolve-Path "build-palesignal/PaleSignal_artefacts/Release/VST3/Pale Signal.vst3").Path
+          $dist = (Resolve-Path dist-palesignal).Path
+          & $compiler "/DPluginDir=$plugin" "/O$dist" source-palesignal/PaleSignal/installer/PaleSignal.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test Windows installer and removal
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path dist-palesignal/PaleSignal-1.0.0-Windows-Setup.exe).Path
+          $install = Start-Process $setup -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw 'Installer failed' }
+          $bundle = "$env:CommonProgramFiles\VST3\Pale Signal.vst3"
+          $source = (Resolve-Path "build-palesignal/PaleSignal_artefacts/Release/VST3/Pale Signal.vst3").Path
+          Get-ChildItem $source -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($source.Length + 1)
+            $target = Join-Path $bundle $relative
+            if (!(Test-Path $target)) { throw "Missing installed file: $relative" }
+            if ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $target).Hash) { throw "Installed file changed: $relative" }
+          }
+          & build-palesignal/palesignal_host_checks_artefacts/Release/palesignal_host_checks.exe $bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $uninstaller = "$env:ProgramFiles\Nobody But Ghosts\Pale Signal\unins000.exe"
+          $remove = Start-Process $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' -PassThru -Wait
+          if ($remove.ExitCode -ne 0) { throw 'Uninstaller failed' }
+          if (Test-Path "$bundle\Contents\x86_64-win\Pale Signal.vst3") { throw 'Plugin remained after uninstall' }
+          Write-Output 'PASS: installer, exact file hashes, installed VST3 load and uninstaller.'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PaleSignal-${{ runner.os }}
+          path: dist-palesignal/*.*
+          if-no-files-found: error
