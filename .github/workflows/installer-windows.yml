@@ -1,0 +1,56 @@
+name: Build Windows installer
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - EchoesAndDepartures.iss
+      - .github/workflows/installer-windows.yml
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installer:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified Windows plugin
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 38320796245 --repo jnimrod420/-Undertow --name EchoesAndDepartures-Windows-x64 --dir artifact
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Expand-Archive artifact/EchoesAndDepartures-VST3-Windows.zip payload
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $compiler)) { throw 'Inno Setup compiler unavailable' }
+          & $compiler EchoesAndDepartures.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test install and uninstall
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path dist/EchoesAndDepartures-1.0.0-Windows-Setup.exe).Path
+          $install = Start-Process $setup -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=install-test.log' -PassThru -Wait
+          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          $bundle = "$env:CommonProgramFiles\VST3\EchoesAndDepartures.vst3"
+          $source = (Resolve-Path payload/EchoesAndDepartures.vst3).Path
+          Get-ChildItem $source -File -Recurse | ForEach-Object {
+            $relative = $_.FullName.Substring($source.Length + 1)
+            $target = Join-Path $bundle $relative
+            if (!(Test-Path $target)) { throw "Missing installed file: $relative" }
+            if ((Get-FileHash $_.FullName).Hash -ne (Get-FileHash $target).Hash) { throw "Installed file changed: $relative" }
+          }
+          $uninstaller = "$env:ProgramFiles\Nobody But Ghosts\Echoes & Departures\unins000.exe"
+          if (!(Test-Path $uninstaller)) { throw 'Uninstaller missing' }
+          $remove = Start-Process $uninstaller -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=uninstall-test.log' -PassThru -Wait
+          if ($remove.ExitCode -ne 0) { throw "Uninstaller failed: $($remove.ExitCode)" }
+          if (Test-Path "$bundle\Contents\x86_64-win\EchoesAndDepartures.vst3") { throw 'Plugin binary remained after uninstall' }
+          Write-Output 'PASS: silent install, complete bundle, exact file hashes, registered uninstaller and plugin removal.'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EchoesAndDepartures-Windows-Installer
+          path: dist/EchoesAndDepartures-1.0.0-Windows-Setup.exe
+          if-no-files-found: error
