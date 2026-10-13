@@ -1,0 +1,85 @@
+name: Package Dead Air Windows installer
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dead-air]
+    paths: ['DeadAir-Installer.nsi', '.github/workflows/package-dead-air-installer.yml']
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installer:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: DeadAir-Windows-VST3
+          run-id: 38338305333
+          github-token: ${{ github.token }}
+          path: verified-build
+      - name: Extract verified VST3
+        shell: pwsh
+        run: |
+          Expand-Archive -Path verified-build/DeadAir-Windows-VST3.zip -DestinationPath payload
+          if (!(Test-Path 'payload/Dead Air.vst3/Contents/x86_64-win/Dead Air.vst3')) { throw 'VST3 binary missing' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+      - name: Install NSIS compiler
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /V3 DeadAir-Installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test installation, payload hashes and uninstallation
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path 'dist/DeadAir-0.3.0-Windows-Setup.exe').Path
+          $probe = Join-Path $env:RUNNER_TEMP 'DeadAirInstallerTest'
+          New-Item -ItemType Directory -Force $probe | Out-Null
+          $sentinel = Join-Path $probe 'KeepThisFile.txt'
+          'Keep unrelated files' | Set-Content $sentinel
+          $result = Start-Process -FilePath $setup -ArgumentList @('/S', "/D=$probe") -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Installer exit code $($result.ExitCode)" }
+          $original = (Resolve-Path 'payload/Dead Air.vst3').Path
+          $installed = Join-Path $probe 'Dead Air.vst3'
+          $expected = @(Get-ChildItem $original -File -Recurse)
+          $actual = @(Get-ChildItem $installed -File -Recurse)
+          if ($expected.Count -ne $actual.Count) { throw 'Installed payload count differs' }
+          foreach ($file in $expected) {
+            $relative = [System.IO.Path]::GetRelativePath($original, $file.FullName)
+            $target = Join-Path $installed $relative
+            if ((Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $target -Algorithm SHA256).Hash) { throw "Payload hash mismatch: $relative" }
+          }
+          $key = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\NobodyButGhosts.DeadAir'
+          $record = Get-ItemProperty $key
+          if ($record.PluginDirectory -ne $probe -or $record.DisplayVersion -ne '0.3.0') { throw 'Installer registry entry wrong' }
+          $uninstaller = Join-Path $env:ProgramW6432 'Nobody But Ghosts\Dead Air\Uninstall.exe'
+          $result = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru
+          if ($result.ExitCode -ne 0) { throw "Uninstaller exit code $($result.ExitCode)" }
+          for ($i=0; $i -lt 30 -and (Test-Path $installed); $i++) { Start-Sleep -Milliseconds 200 }
+          if (Test-Path $installed) { throw 'Uninstaller left the plug-in behind' }
+          if (Test-Path $key) { throw 'Uninstaller left the registry key behind' }
+          if (!(Test-Path $sentinel)) { throw 'Uninstaller removed an unrelated file' }
+          'PASS: installer, exact verified payload hashes, registry metadata, uninstallation and unrelated-file preservation.'
+      - name: Package download
+        shell: pwsh
+        run: |
+          @'
+          DEAD AIR 0.3.0 - WINDOWS INSTALLER
+          Extract the ZIP and run DeadAir-0.3.0-Windows-Setup.exe.
+          Close REAPER or any other DAW before installing. Administrator permission is required.
+          Installs the complete 64-bit VST3 bundle to C:\Program Files\Common Files\VST3.
+          Rescan VST3 plug-ins in your DAW afterward. Includes all 20 Transmission presets.
+          Remove through Windows Installed apps using the Dead Air entry.
+          This installer is unsigned because no code-signing certificate was provided.
+          Tested on the GitHub Windows runner for install, exact payload hashes and uninstall.
+          '@ | Set-Content dist/INSTALL-WINDOWS.txt
+          Compress-Archive -Path dist/DeadAir-0.3.0-Windows-Setup.exe,dist/INSTALL-WINDOWS.txt -DestinationPath dist/DeadAir-0.3.0-Windows-Installer.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeadAir-Windows-Installer
+          path: dist/*
+          if-no-files-found: error
