@@ -1,0 +1,60 @@
+name: Build Dead Air
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, dead-air]
+    paths: ['DeadAir-source.zip', '.github/workflows/build-dead-air.yml']
+permissions:
+  contents: read
+concurrency:
+  group: dead-air-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unpack Mac source
+        if: runner.os == 'macOS'
+        run: unzip -q DeadAir-source.zip -d source-deadair
+      - name: Unpack Windows source
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Expand-Archive -Path DeadAir-source.zip -DestinationPath source-deadair
+      - name: Configure Mac universal
+        if: runner.os == 'macOS'
+        run: cmake -S source-deadair/DeadAir -B build-deadair -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+      - name: Configure Windows x64
+        if: runner.os == 'Windows'
+        run: cmake -S source-deadair/DeadAir -B build-deadair -A x64
+      - run: cmake --build build-deadair --config Release --parallel 3
+      - run: ctest --test-dir build-deadair -C Release --output-on-failure
+      - name: Mac GUI and actual VST3 checks
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist-deadair
+          build-deadair/deadair_gui_checks_artefacts/Release/deadair_gui_checks dist-deadair
+          build-deadair/deadair_host_checks_artefacts/Release/deadair_host_checks "build-deadair/DeadAir_artefacts/Release/VST3/Dead Air.vst3"
+          lipo "build-deadair/DeadAir_artefacts/Release/VST3/Dead Air.vst3/Contents/MacOS/Dead Air" -verify_arch arm64 x86_64
+          codesign --force --deep --sign - "build-deadair/DeadAir_artefacts/Release/VST3/Dead Air.vst3"
+          ditto -c -k --sequesterRsrc --keepParent "build-deadair/DeadAir_artefacts/Release/VST3/Dead Air.vst3" dist-deadair/DeadAir-Mac-VST3.zip
+      - name: Windows GUI and actual VST3 checks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-deadair | Out-Null
+          & build-deadair/deadair_gui_checks_artefacts/Release/deadair_gui_checks.exe dist-deadair
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & build-deadair/deadair_host_checks_artefacts/Release/deadair_host_checks.exe "build-deadair/DeadAir_artefacts/Release/VST3/Dead Air.vst3"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path "build-deadair/DeadAir_artefacts/Release/VST3/Dead Air.vst3" -DestinationPath dist-deadair/DeadAir-Windows-VST3.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeadAir-${{ runner.os }}-VST3
+          path: dist-deadair/*
+          if-no-files-found: error
